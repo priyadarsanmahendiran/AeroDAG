@@ -24,6 +24,9 @@ public class Node {
     @Column(updatable = false, nullable = false)
     private UUID id;
 
+    @Column(name = "node_id")
+    private String nodeId;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private NodeStatus status;

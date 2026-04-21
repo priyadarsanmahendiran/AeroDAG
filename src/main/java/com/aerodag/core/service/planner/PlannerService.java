@@ -9,6 +9,7 @@ import com.aerodag.core.domain.entity.NodeStatus;
 import com.aerodag.core.domain.entity.Plan;
 import com.aerodag.core.domain.entity.PlanStatus;
 import com.aerodag.core.exception.DagGenerationException;
+import com.aerodag.core.messaging.publisher.NodeQueuePublisher;
 import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 
 @Service
 public class PlannerService {
@@ -33,8 +35,8 @@ public class PlannerService {
             - The graph MUST be acyclic. No circular dependencies.
             - nodeId values must be unique strings (e.g. "node-1", "node-2").
 
-            Respond ONLY with a valid JSON object matching this exact schema. \
-            No markdown, no explanation, no code fences — raw JSON only:
+            Respond ONLY with a valid text matching this exact schema. \
+            No markdown, no explanation, no code fences — raw text only as follows,
             {
               "globalObjective": "<the user's objective>",
               "nodes": [
@@ -50,15 +52,18 @@ public class PlannerService {
 
     private final PlanRepository planRepository;
     private final NodeRepository nodeRepository;
+    private final NodeQueuePublisher nodeQueuePublisher;
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper;
 
     public PlannerService(PlanRepository planRepository,
                           NodeRepository nodeRepository,
+                          NodeQueuePublisher nodeQueuePublisher,
                           ChatClient.Builder chatClientBuilder,
                           ObjectMapper objectMapper) {
         this.planRepository = planRepository;
         this.nodeRepository = nodeRepository;
+        this.nodeQueuePublisher = nodeQueuePublisher;
         this.chatClient = chatClientBuilder.build();
         this.objectMapper = objectMapper;
     }
@@ -71,12 +76,22 @@ public class PlannerService {
                 .call()
                 .content();
 
+        if(Objects.isNull(rawJson)) {
+            throw new DagGenerationException("LLM returned null response for DAG generation.");
+        }
+
+        String sanitizedJson = rawJson.strip();
+        if (sanitizedJson.startsWith("```") || sanitizedJson.endsWith("```")) {
+            sanitizedJson = sanitizedJson.replaceFirst("^```[a-zA-Z]*\\r?\\n?", "");
+            sanitizedJson = sanitizedJson.replaceFirst("```\\s*$", "").strip();
+        }
+
         DagGenerationResponse dagResponse;
         try {
-            dagResponse = objectMapper.readValue(rawJson, DagGenerationResponse.class);
+            dagResponse = objectMapper.readValue(sanitizedJson, DagGenerationResponse.class);
         } catch (Exception e) {
             throw new DagGenerationException(
-                    "Failed to parse LLM DAG response. Raw output: " + rawJson, e);
+                    "Failed to parse LLM DAG response. Raw output: " + sanitizedJson, e);
         }
 
         Plan plan = planRepository.save(
@@ -91,6 +106,10 @@ public class PlannerService {
                 .toList();
         nodeRepository.saveAll(nodes);
 
+        nodes.stream()
+                .filter(n -> n.getDependencies() == null || n.getDependencies().isEmpty())
+                .forEach(n -> nodeQueuePublisher.publishReadyNode(n.getId()));
+
         List<NodeResponse> nodeResponses = nodes.stream()
                 .map(n -> new NodeResponse(n.getInstruction()))
                 .toList();
@@ -101,6 +120,7 @@ public class PlannerService {
     private Node mapToNode(DagNodeResponse nr, Plan plan) {
         return Node.builder()
                 .plan(plan)
+                .nodeId(nr.nodeId())
                 .status(NodeStatus.PENDING)
                 .instruction(nr.instruction())
                 .dependencies(nr.dependencies())
