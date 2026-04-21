@@ -6,5 +6,5 @@ import java.util.List;
 
 public record DagGenerationResponse(
         @JsonProperty("globalObjective") String globalObjective,
-        @JsonProperty("nodes") List<NodeResponse> nodes
+        @JsonProperty("nodes") List<DagNodeResponse> nodes
 ) {}

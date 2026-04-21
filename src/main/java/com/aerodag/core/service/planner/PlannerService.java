@@ -1,7 +1,9 @@
 package com.aerodag.core.service.planner;
 
 import com.aerodag.core.domain.dto.DagGenerationResponse;
+import com.aerodag.core.domain.dto.DagNodeResponse;
 import com.aerodag.core.domain.dto.NodeResponse;
+import com.aerodag.core.domain.dto.PlanResponse;
 import com.aerodag.core.domain.entity.Node;
 import com.aerodag.core.domain.entity.NodeStatus;
 import com.aerodag.core.domain.entity.Plan;
@@ -62,7 +64,7 @@ public class PlannerService {
     }
 
     @Transactional
-    public Plan generateAndSaveDag(String userObjective) {
+    public PlanResponse generateAndSaveDag(String userObjective) {
         String rawJson = chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user(userObjective)
@@ -89,10 +91,14 @@ public class PlannerService {
                 .toList();
         nodeRepository.saveAll(nodes);
 
-        return plan;
+        List<NodeResponse> nodeResponses = nodes.stream()
+                .map(n -> new NodeResponse(n.getInstruction()))
+                .toList();
+
+        return PlanResponse.from(plan, nodeResponses);
     }
 
-    private Node mapToNode(NodeResponse nr, Plan plan) {
+    private Node mapToNode(DagNodeResponse nr, Plan plan) {
         return Node.builder()
                 .plan(plan)
                 .status(NodeStatus.PENDING)
