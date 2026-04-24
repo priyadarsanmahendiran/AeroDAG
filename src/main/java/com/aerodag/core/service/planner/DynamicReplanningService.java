@@ -11,6 +11,8 @@ import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
 import com.aerodag.core.service.telemetry.SseNotificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -18,15 +20,13 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
-import java.util.stream.Collectors;
-
 @Service
 public class DynamicReplanningService {
 
-    private static final Logger log = LoggerFactory.getLogger(DynamicReplanningService.class);
+  private static final Logger log = LoggerFactory.getLogger(DynamicReplanningService.class);
 
-    private static final String REPLANNING_SYSTEM_PROMPT = """
+  private static final String REPLANNING_SYSTEM_PROMPT =
+      """
             You are an AI orchestrator. The previous plan failed mid-execution. \
             Based on the successes and the failure, generate a NEW DAG (JSON) with new nodes \
             to achieve the original objective.
@@ -54,122 +54,120 @@ public class DynamicReplanningService {
             }
             """;
 
-    private final PlanRepository planRepository;
-    private final NodeRepository nodeRepository;
-    private final PlannerService plannerService;
-    private final NodeQueuePublisher nodeQueuePublisher;
-    private final SseNotificationService sseNotificationService;
-    private final ChatClient chatClient;
-    private final ObjectMapper objectMapper;
+  private final PlanRepository planRepository;
+  private final NodeRepository nodeRepository;
+  private final PlannerService plannerService;
+  private final NodeQueuePublisher nodeQueuePublisher;
+  private final SseNotificationService sseNotificationService;
+  private final ChatClient chatClient;
+  private final ObjectMapper objectMapper;
 
-    public DynamicReplanningService(PlanRepository planRepository,
-                                    NodeRepository nodeRepository,
-                                    PlannerService plannerService,
-                                    NodeQueuePublisher nodeQueuePublisher,
-                                    SseNotificationService sseNotificationService,
-                                    ChatClient.Builder chatClientBuilder,
-                                    ObjectMapper objectMapper) {
-        this.planRepository = planRepository;
-        this.nodeRepository = nodeRepository;
-        this.plannerService = plannerService;
-        this.nodeQueuePublisher = nodeQueuePublisher;
-        this.sseNotificationService = sseNotificationService;
-        this.chatClient = chatClientBuilder.build();
-        this.objectMapper = objectMapper;
+  public DynamicReplanningService(
+      PlanRepository planRepository,
+      NodeRepository nodeRepository,
+      PlannerService plannerService,
+      NodeQueuePublisher nodeQueuePublisher,
+      SseNotificationService sseNotificationService,
+      ChatClient.Builder chatClientBuilder,
+      ObjectMapper objectMapper) {
+    this.planRepository = planRepository;
+    this.nodeRepository = nodeRepository;
+    this.plannerService = plannerService;
+    this.nodeQueuePublisher = nodeQueuePublisher;
+    this.sseNotificationService = sseNotificationService;
+    this.chatClient = chatClientBuilder.build();
+    this.objectMapper = objectMapper;
+  }
+
+  @Transactional
+  @EventListener
+  public void onNodeFailed(NodeFailedEvent event) {
+    Plan plan = planRepository.findById(event.planId()).orElse(null);
+    if (plan == null) {
+      log.error("Plan {} not found for replanning", event.planId());
+      return;
     }
 
-    @Transactional
-    @EventListener
-    public void onNodeFailed(NodeFailedEvent event) {
-        Plan plan = planRepository.findById(event.planId()).orElse(null);
-        if (plan == null) {
-            log.error("Plan {} not found for replanning", event.planId());
-            return;
-        }
+    List<Node> allNodes = nodeRepository.findByPlanId(event.planId());
 
-        List<Node> allNodes = nodeRepository.findByPlanId(event.planId());
+    List<Node> pendingNodes =
+        allNodes.stream()
+            .filter(n -> n.getStatus() == NodeStatus.PENDING)
+            .peek(n -> n.setStatus(NodeStatus.CANCELLED))
+            .toList();
+    nodeRepository.saveAll(pendingNodes);
 
-        List<Node> pendingNodes = allNodes.stream()
-                .filter(n -> n.getStatus() == NodeStatus.PENDING)
-                .peek(n -> n.setStatus(NodeStatus.CANCELLED))
-                .toList();
-        nodeRepository.saveAll(pendingNodes);
+    Node failedNode =
+        allNodes.stream().filter(n -> n.getId().equals(event.nodeId())).findFirst().orElse(null);
 
-        Node failedNode = allNodes.stream()
-                .filter(n -> n.getId().equals(event.nodeId()))
-                .findFirst()
-                .orElse(null);
+    String completedContext =
+        allNodes.stream()
+            .filter(n -> n.getStatus() == NodeStatus.COMPLETED)
+            .map(n -> "- " + n.getInstruction() + ": " + n.getResultPayload())
+            .collect(Collectors.joining("\n"));
 
-        String completedContext = allNodes.stream()
-                .filter(n -> n.getStatus() == NodeStatus.COMPLETED)
-                .map(n -> "- " + n.getInstruction() + ": " + n.getResultPayload())
-                .collect(Collectors.joining("\n"));
+    String failedInstruction =
+        failedNode != null ? failedNode.getInstruction() : event.nodeId().toString();
+    String failedNodeId = failedNode != null ? failedNode.getNodeId() : event.nodeId().toString();
 
-        String failedInstruction = failedNode != null ? failedNode.getInstruction() : event.nodeId().toString();
-        String failedNodeId = failedNode != null ? failedNode.getNodeId() : event.nodeId().toString();
+    sseNotificationService.broadcastNodeUpdate(
+        event.planId(), failedNodeId, NodeStatus.FAILED.name(), event.errorMessage());
 
-        sseNotificationService.broadcastNodeUpdate(
-                event.planId(),
-                failedNodeId,
-                NodeStatus.FAILED.name(),
-                event.errorMessage()
-        );
+    String contextPrompt =
+        String.format(
+            "Original Objective: %s. The following steps succeeded:\n%s\nHowever, step '%s' failed with error: %s.",
+            plan.getGlobalObjective(),
+            completedContext.isBlank() ? "(none)" : completedContext,
+            failedInstruction,
+            event.errorMessage());
 
-        String contextPrompt = String.format(
-                "Original Objective: %s. The following steps succeeded:\n%s\nHowever, step '%s' failed with error: %s.",
-                plan.getGlobalObjective(),
-                completedContext.isBlank() ? "(none)" : completedContext,
-                failedInstruction,
-                event.errorMessage()
-        );
+    log.info("Triggering replanning for plan {}", event.planId());
 
-        log.info("Triggering replanning for plan {}", event.planId());
+    String rawJson =
+        chatClient.prompt().system(REPLANNING_SYSTEM_PROMPT).user(contextPrompt).call().content();
 
-        String rawJson = chatClient.prompt()
-                .system(REPLANNING_SYSTEM_PROMPT)
-                .user(contextPrompt)
-                .call()
-                .content();
-
-        if (rawJson == null) {
-            log.error("LLM returned null during replanning for plan {}", event.planId());
-            return;
-        }
-
-        String sanitizedJson = rawJson.strip();
-        if (sanitizedJson.startsWith("```") || sanitizedJson.endsWith("```")) {
-            sanitizedJson = sanitizedJson.replaceFirst("^```[a-zA-Z]*\\r?\\n?", "");
-            sanitizedJson = sanitizedJson.replaceFirst("```\\s*$", "").strip();
-        }
-
-        DagGenerationResponse dagResponse;
-        try {
-            dagResponse = objectMapper.readValue(sanitizedJson, DagGenerationResponse.class);
-        } catch (Exception e) {
-            log.error("Failed to parse replanning response for plan {}. Raw: {}", event.planId(), sanitizedJson, e);
-            return;
-        }
-
-        List<Node> newNodes = dagResponse.nodes().stream()
-                .map(nr -> mapToNode(nr, plan))
-                .toList();
-        nodeRepository.saveAll(newNodes);
-
-        newNodes.stream()
-                .filter(n -> n.getDependencies() == null || n.getDependencies().isEmpty())
-                .forEach(n -> nodeQueuePublisher.publishReadyNode(n.getId()));
-
-        log.info("Replanning complete for plan {}. {} new nodes created.", event.planId(), newNodes.size());
+    if (rawJson == null) {
+      log.error("LLM returned null during replanning for plan {}", event.planId());
+      return;
     }
 
-    private Node mapToNode(DagNodeResponse nr, Plan plan) {
-        return Node.builder()
-                .plan(plan)
-                .nodeId(nr.nodeId())
-                .status(NodeStatus.PENDING)
-                .instruction(nr.instruction())
-                .dependencies(nr.dependencies())
-                .toolsAllowed(nr.toolsAllowed())
-                .build();
+    String sanitizedJson = rawJson.strip();
+    if (sanitizedJson.startsWith("```") || sanitizedJson.endsWith("```")) {
+      sanitizedJson = sanitizedJson.replaceFirst("^```[a-zA-Z]*\\r?\\n?", "");
+      sanitizedJson = sanitizedJson.replaceFirst("```\\s*$", "").strip();
     }
+
+    DagGenerationResponse dagResponse;
+    try {
+      dagResponse = objectMapper.readValue(sanitizedJson, DagGenerationResponse.class);
+    } catch (Exception e) {
+      log.error(
+          "Failed to parse replanning response for plan {}. Raw: {}",
+          event.planId(),
+          sanitizedJson,
+          e);
+      return;
+    }
+
+    List<Node> newNodes = dagResponse.nodes().stream().map(nr -> mapToNode(nr, plan)).toList();
+    nodeRepository.saveAll(newNodes);
+
+    newNodes.stream()
+        .filter(n -> n.getDependencies() == null || n.getDependencies().isEmpty())
+        .forEach(n -> nodeQueuePublisher.publishReadyNode(n.getId()));
+
+    log.info(
+        "Replanning complete for plan {}. {} new nodes created.", event.planId(), newNodes.size());
+  }
+
+  private Node mapToNode(DagNodeResponse nr, Plan plan) {
+    return Node.builder()
+        .plan(plan)
+        .nodeId(nr.nodeId())
+        .status(NodeStatus.PENDING)
+        .instruction(nr.instruction())
+        .dependencies(nr.dependencies())
+        .toolsAllowed(nr.toolsAllowed())
+        .build();
+  }
 }

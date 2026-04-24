@@ -8,79 +8,79 @@ import com.aerodag.core.messaging.publisher.NodeQueuePublisher;
 import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
 import com.aerodag.core.service.telemetry.SseNotificationService;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 @Component
 public class InternalEventCascadeListener {
 
-    private static final Logger log = LoggerFactory.getLogger(InternalEventCascadeListener.class);
+  private static final Logger log = LoggerFactory.getLogger(InternalEventCascadeListener.class);
 
-    private final NodeRepository nodeRepository;
-    private final NodeQueuePublisher nodeQueuePublisher;
-    private final PlanRepository planRepository;
-    private final SseNotificationService sseNotificationService;
+  private final NodeRepository nodeRepository;
+  private final NodeQueuePublisher nodeQueuePublisher;
+  private final PlanRepository planRepository;
+  private final SseNotificationService sseNotificationService;
 
-    public InternalEventCascadeListener(NodeRepository nodeRepository,
-                                        NodeQueuePublisher nodeQueuePublisher,
-                                        PlanRepository planRepository,
-                                        SseNotificationService sseNotificationService) {
-        this.nodeRepository = nodeRepository;
-        this.nodeQueuePublisher = nodeQueuePublisher;
-        this.planRepository = planRepository;
-        this.sseNotificationService = sseNotificationService;
+  public InternalEventCascadeListener(
+      NodeRepository nodeRepository,
+      NodeQueuePublisher nodeQueuePublisher,
+      PlanRepository planRepository,
+      SseNotificationService sseNotificationService) {
+    this.nodeRepository = nodeRepository;
+    this.nodeQueuePublisher = nodeQueuePublisher;
+    this.planRepository = planRepository;
+    this.sseNotificationService = sseNotificationService;
+  }
+
+  @EventListener
+  @Transactional
+  public void onNodeCompleted(NodeCompletedEvent event) {
+    List<Node> allNodes = nodeRepository.findByPlanId(event.planId());
+
+    Node completedNode =
+        allNodes.stream().filter(n -> n.getId().equals(event.nodeId())).findFirst().orElse(null);
+
+    if (completedNode != null) {
+      sseNotificationService.broadcastNodeUpdate(
+          event.planId(),
+          completedNode.getNodeId(),
+          NodeStatus.COMPLETED.name(),
+          completedNode.getResultPayload());
     }
 
-    @EventListener
-    @Transactional
-    public void onNodeCompleted(NodeCompletedEvent event) {
-        List<Node> allNodes = nodeRepository.findByPlanId(event.planId());
-
-        Node completedNode = allNodes.stream()
-                .filter(n -> n.getId().equals(event.nodeId()))
-                .findFirst()
-                .orElse(null);
-
-        if (completedNode != null) {
-            sseNotificationService.broadcastNodeUpdate(
-                    event.planId(),
-                    completedNode.getNodeId(),
-                    NodeStatus.COMPLETED.name(),
-                    completedNode.getResultPayload()
-            );
-        }
-
-        Set<String> completedNodeIds = allNodes.stream()
-                .filter(n -> n.getStatus() == NodeStatus.COMPLETED)
-                .map(Node::getNodeId)
-                .collect(Collectors.toSet());
-
+    Set<String> completedNodeIds =
         allNodes.stream()
-                .filter(n -> n.getStatus() == NodeStatus.PENDING)
-                .filter(n -> n.getDependencies() == null
-                        || completedNodeIds.containsAll(n.getDependencies()))
-                .forEach(n -> {
-                    log.info("Node {} unblocked, publishing to queue", n.getId());
-                    nodeQueuePublisher.publishReadyNode(n.getId());
-                });
+            .filter(n -> n.getStatus() == NodeStatus.COMPLETED)
+            .map(Node::getNodeId)
+            .collect(Collectors.toSet());
 
-        boolean allCompleted = allNodes.stream()
-                .allMatch(n -> n.getStatus() == NodeStatus.COMPLETED);
+    allNodes.stream()
+        .filter(n -> n.getStatus() == NodeStatus.PENDING)
+        .filter(
+            n -> n.getDependencies() == null || completedNodeIds.containsAll(n.getDependencies()))
+        .forEach(
+            n -> {
+              log.info("Node {} unblocked, publishing to queue", n.getId());
+              nodeQueuePublisher.publishReadyNode(n.getId());
+            });
 
-        if (allCompleted) {
-            planRepository.findById(event.planId()).ifPresent(plan -> {
+    boolean allCompleted = allNodes.stream().allMatch(n -> n.getStatus() == NodeStatus.COMPLETED);
+
+    if (allCompleted) {
+      planRepository
+          .findById(event.planId())
+          .ifPresent(
+              plan -> {
                 plan.setStatus(PlanStatus.COMPLETED);
                 planRepository.save(plan);
                 log.info("Plan {} status -> COMPLETED", event.planId());
-            });
-        }
+              });
     }
-
+  }
 }
