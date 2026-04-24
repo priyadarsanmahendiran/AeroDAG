@@ -8,6 +8,7 @@ import com.aerodag.core.messaging.event.NodeCompletedEvent;
 import com.aerodag.core.messaging.publisher.NodeQueuePublisher;
 import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
+import com.aerodag.core.service.telemetry.SseNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,13 +29,14 @@ class InternalEventCascadeListenerTest {
     @Mock private NodeRepository nodeRepository;
     @Mock private NodeQueuePublisher nodeQueuePublisher;
     @Mock private PlanRepository planRepository;
+    @Mock private SseNotificationService sseNotificationService;
 
     private InternalEventCascadeListener listener;
     private UUID planId;
 
     @BeforeEach
     void setUp() {
-        listener = new InternalEventCascadeListener(nodeRepository, nodeQueuePublisher, planRepository);
+        listener = new InternalEventCascadeListener(nodeRepository, nodeQueuePublisher, planRepository, sseNotificationService);
         planId = UUID.randomUUID();
     }
 

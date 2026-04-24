@@ -97,7 +97,11 @@ class PlannerServiceTest {
         when(mockChatClient.prompt().system(anyString()).user(anyString()).call().content())
                 .thenReturn(VALID_DAG_JSON);
         when(planRepository.save(any(Plan.class))).thenReturn(savedPlan);
-        when(nodeRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+        when(nodeRepository.saveAll(anyList())).thenAnswer(inv -> {
+            List<Node> nodes = inv.getArgument(0);
+            nodes.forEach(n -> n.setId(UUID.randomUUID()));
+            return nodes;
+        });
 
         plannerService.generateAndSaveDag("Do something");
 

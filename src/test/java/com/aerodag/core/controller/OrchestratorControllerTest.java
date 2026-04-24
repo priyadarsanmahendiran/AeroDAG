@@ -4,6 +4,7 @@ import com.aerodag.core.domain.dto.PlanRequest;
 import com.aerodag.core.domain.dto.PlanResponse;
 import com.aerodag.core.domain.entity.PlanStatus;
 import com.aerodag.core.service.planner.PlannerService;
+import com.aerodag.core.service.telemetry.SseNotificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +31,9 @@ class OrchestratorControllerTest {
 
     @MockBean
     private PlannerService plannerService;
+
+    @MockBean
+    private SseNotificationService sseNotificationService;
 
     @Test
     void createPlan_validRequest_returns200WithPlanResponse() throws Exception {

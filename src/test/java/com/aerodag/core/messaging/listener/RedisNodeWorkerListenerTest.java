@@ -5,6 +5,7 @@ import com.aerodag.core.domain.entity.NodeStatus;
 import com.aerodag.core.domain.entity.Plan;
 import com.aerodag.core.domain.entity.PlanStatus;
 import com.aerodag.core.messaging.event.NodeCompletedEvent;
+import com.aerodag.core.messaging.event.NodeFailedEvent;
 import com.aerodag.core.repository.NodeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -42,7 +44,6 @@ class RedisNodeWorkerListenerTest {
     void setUp() {
         mockChatClient = mock(ChatClient.class, RETURNS_DEEP_STUBS);
         when(chatClientBuilder.build()).thenReturn(mockChatClient);
-        when(redisTemplate.opsForList()).thenReturn(listOperations);
         listener = new RedisNodeWorkerListener(redisTemplate, nodeRepository, chatClientBuilder, eventPublisher);
     }
 
@@ -121,8 +122,11 @@ class RedisNodeWorkerListenerTest {
         ReflectionTestUtils.invokeMethod(listener, "processNode", nodeId);
 
         assertThat(node.getStatus()).isEqualTo(NodeStatus.FAILED);
-        assertThat(node.getResultPayload()).isNull();
-        verify(eventPublisher, never()).publishEvent(any());
+        assertThat(node.getResultPayload()).isEqualTo("Execution failed: LLM unavailable");
+
+        ArgumentCaptor<NodeFailedEvent> eventCaptor = ArgumentCaptor.forClass(NodeFailedEvent.class);
+        verify(eventPublisher).publishEvent(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().errorMessage()).isEqualTo("LLM unavailable");
     }
 
     @Test
@@ -148,15 +152,17 @@ class RedisNodeWorkerListenerTest {
         when(mockChatClient.prompt().system(anyString()).user(anyString()).call().content())
                 .thenReturn("result");
 
-        ArgumentCaptor<Node> saveCaptor = ArgumentCaptor.forClass(Node.class);
-        when(nodeRepository.save(saveCaptor.capture())).thenAnswer(inv -> inv.getArgument(0));
+        List<NodeStatus> capturedStatuses = new ArrayList<>();
+        doAnswer(inv -> {
+            capturedStatuses.add(((Node) inv.getArgument(0)).getStatus());
+            return inv.getArgument(0);
+        }).when(nodeRepository).save(any(Node.class));
 
         ReflectionTestUtils.invokeMethod(listener, "processNode", nodeId);
 
         // First save must have been RUNNING (before LLM), second COMPLETED (after)
-        List<Node> savedNodes = saveCaptor.getAllValues();
-        assertThat(savedNodes).hasSize(2);
-        assertThat(savedNodes.get(0).getStatus()).isEqualTo(NodeStatus.RUNNING);
-        assertThat(savedNodes.get(1).getStatus()).isEqualTo(NodeStatus.COMPLETED);
+        assertThat(capturedStatuses).hasSize(2);
+        assertThat(capturedStatuses.get(0)).isEqualTo(NodeStatus.RUNNING);
+        assertThat(capturedStatuses.get(1)).isEqualTo(NodeStatus.COMPLETED);
     }
 }
