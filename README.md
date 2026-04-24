@@ -1,6 +1,6 @@
 # AeroDAG
 
-Enterprise-grade Plan-then-Execute AI Orchestrator. Takes a natural language objective, decomposes it into a Directed Acyclic Graph (DAG) of tasks using Claude, persists the plan, and executes nodes in dependency order.
+Enterprise-grade Plan-then-Execute AI Orchestrator. Takes a natural language objective, decomposes it into a Directed Acyclic Graph (DAG) of tasks using Claude, persists the plan, and executes nodes in dependency order — with automatic mid-execution replanning when nodes fail.
 
 ## Tech Stack
 
@@ -13,6 +13,22 @@ Enterprise-grade Plan-then-Execute AI Orchestrator. Takes a natural language obj
 | Cache / Queue | Redis (redis-stack) |
 | API Docs | springdoc-openapi (Swagger UI) |
 | Testing | JUnit 5, Testcontainers |
+
+## How It Works
+
+1. **Plan** — A natural language objective is sent to Claude, which returns a DAG of atomic tasks as JSON.
+2. **Persist** — The `Plan` and its `Node` entities are saved to PostgreSQL. Root nodes (no dependencies) are pushed to a Redis queue.
+3. **Execute** — `RedisNodeWorkerListener` polls the queue, runs each node's instruction via Claude, and saves the result payload.
+4. **Advance** — On `NodeCompletedEvent`, the orchestrator checks if dependent nodes are unblocked and queues them.
+5. **Replan** — On `NodeFailedEvent`, `DynamicReplanningService` cancels all remaining PENDING nodes, summarises what succeeded and what failed, and re-prompts Claude to generate a new DAG attached to the same `Plan`.
+
+## Node Lifecycle
+
+```
+PENDING → RUNNING → COMPLETED
+                  ↘ FAILED
+PENDING → CANCELLED  (when a sibling fails and the plan is replanned)
+```
 
 ## Prerequisites
 
@@ -66,11 +82,16 @@ src/main/java/com/aerodag/
 └── core/
     ├── domain/
     │   ├── dto/          # LLM response records (DagGenerationResponse, NodeResponse)
-    │   └── entity/       # JPA entities (Plan, Node) + status enums
+    │   └── entity/       # JPA entities (Plan, Node) + enums (NodeStatus, PlanStatus)
     ├── exception/        # DagGenerationException
+    ├── messaging/
+    │   ├── event/        # NodeCompletedEvent, NodeFailedEvent
+    │   ├── listener/     # RedisNodeWorkerListener — polls queue, runs LLM, publishes events
+    │   └── publisher/    # NodeQueuePublisher — pushes node UUIDs onto Redis list
     ├── repository/       # PlanRepository, NodeRepository
     └── service/
-        └── planner/      # PlannerService — LLM call + DAG persistence
+        └── planner/      # PlannerService — initial DAG generation
+                          # DynamicReplanningService — failure recovery + replanning
 ```
 
 ## Configuration
