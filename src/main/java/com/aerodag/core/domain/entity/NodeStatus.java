@@ -4,5 +4,6 @@ public enum NodeStatus {
     PENDING,
     RUNNING,
     COMPLETED,
-    FAILED
+    FAILED,
+    CANCELLED
 }
