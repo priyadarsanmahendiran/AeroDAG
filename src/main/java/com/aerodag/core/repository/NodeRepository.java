@@ -12,4 +12,6 @@ public interface NodeRepository extends JpaRepository<Node, UUID> {
     List<Node> findByPlanId(UUID planId);
 
     List<Node> findByPlanIdAndStatus(UUID planId, NodeStatus status);
+
+    List<Node> findByPlanIdAndNodeIdIn(UUID planId, List<String> nodeIds);
 }

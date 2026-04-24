@@ -113,6 +113,13 @@
             <version>2.6.0</version>
         </dependency>
 
+        <!-- ── Math Expression Evaluation ──────────────────────── -->
+        <dependency>
+            <groupId>net.objecthunter</groupId>
+            <artifactId>exp4j</artifactId>
+            <version>0.4.8</version>
+        </dependency>
+
         <!-- ── Developer Tooling ────────────────────────────────── -->
         <dependency>
             <groupId>org.projectlombok</groupId>
