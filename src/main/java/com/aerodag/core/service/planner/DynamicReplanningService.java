@@ -9,6 +9,7 @@ import com.aerodag.core.messaging.event.NodeFailedEvent;
 import com.aerodag.core.messaging.publisher.NodeQueuePublisher;
 import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
+import com.aerodag.core.service.telemetry.SseNotificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +58,7 @@ public class DynamicReplanningService {
     private final NodeRepository nodeRepository;
     private final PlannerService plannerService;
     private final NodeQueuePublisher nodeQueuePublisher;
+    private final SseNotificationService sseNotificationService;
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper;
 
@@ -64,12 +66,14 @@ public class DynamicReplanningService {
                                     NodeRepository nodeRepository,
                                     PlannerService plannerService,
                                     NodeQueuePublisher nodeQueuePublisher,
+                                    SseNotificationService sseNotificationService,
                                     ChatClient.Builder chatClientBuilder,
                                     ObjectMapper objectMapper) {
         this.planRepository = planRepository;
         this.nodeRepository = nodeRepository;
         this.plannerService = plannerService;
         this.nodeQueuePublisher = nodeQueuePublisher;
+        this.sseNotificationService = sseNotificationService;
         this.chatClient = chatClientBuilder.build();
         this.objectMapper = objectMapper;
     }
@@ -102,6 +106,14 @@ public class DynamicReplanningService {
                 .collect(Collectors.joining("\n"));
 
         String failedInstruction = failedNode != null ? failedNode.getInstruction() : event.nodeId().toString();
+        String failedNodeId = failedNode != null ? failedNode.getNodeId() : event.nodeId().toString();
+
+        sseNotificationService.broadcastNodeUpdate(
+                event.planId(),
+                failedNodeId,
+                NodeStatus.FAILED.name(),
+                event.errorMessage()
+        );
 
         String contextPrompt = String.format(
                 "Original Objective: %s. The following steps succeeded:\n%s\nHowever, step '%s' failed with error: %s.",

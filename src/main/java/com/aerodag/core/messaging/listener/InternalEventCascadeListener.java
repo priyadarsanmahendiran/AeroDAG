@@ -7,6 +7,7 @@ import com.aerodag.core.messaging.event.NodeCompletedEvent;
 import com.aerodag.core.messaging.publisher.NodeQueuePublisher;
 import com.aerodag.core.repository.NodeRepository;
 import com.aerodag.core.repository.PlanRepository;
+import com.aerodag.core.service.telemetry.SseNotificationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -25,19 +26,36 @@ public class InternalEventCascadeListener {
     private final NodeRepository nodeRepository;
     private final NodeQueuePublisher nodeQueuePublisher;
     private final PlanRepository planRepository;
+    private final SseNotificationService sseNotificationService;
 
     public InternalEventCascadeListener(NodeRepository nodeRepository,
                                         NodeQueuePublisher nodeQueuePublisher,
-                                        PlanRepository planRepository) {
+                                        PlanRepository planRepository,
+                                        SseNotificationService sseNotificationService) {
         this.nodeRepository = nodeRepository;
         this.nodeQueuePublisher = nodeQueuePublisher;
         this.planRepository = planRepository;
+        this.sseNotificationService = sseNotificationService;
     }
 
     @EventListener
     @Transactional
     public void onNodeCompleted(NodeCompletedEvent event) {
         List<Node> allNodes = nodeRepository.findByPlanId(event.planId());
+
+        Node completedNode = allNodes.stream()
+                .filter(n -> n.getId().equals(event.nodeId()))
+                .findFirst()
+                .orElse(null);
+
+        if (completedNode != null) {
+            sseNotificationService.broadcastNodeUpdate(
+                    event.planId(),
+                    completedNode.getNodeId(),
+                    NodeStatus.COMPLETED.name(),
+                    completedNode.getResultPayload()
+            );
+        }
 
         Set<String> completedNodeIds = allNodes.stream()
                 .filter(n -> n.getStatus() == NodeStatus.COMPLETED)
@@ -64,4 +82,5 @@ public class InternalEventCascadeListener {
             });
         }
     }
+
 }
