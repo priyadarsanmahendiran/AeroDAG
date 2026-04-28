@@ -39,6 +39,10 @@ public class DynamicReplanningService {
             - The graph MUST be acyclic. No circular dependencies.
             - nodeId values must be unique strings (e.g. "node-1", "node-2").
 
+            Available tools (use exact names):
+            - webSearchTool: searches the web for a given query
+            - calculatorTool: evaluates mathematical expressions
+
             Respond ONLY with a valid text matching this exact schema. \
             No markdown, no explanation, no code fences — raw text only as follows,
             {

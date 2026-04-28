@@ -5,12 +5,14 @@ import com.aerodag.core.domain.entity.NodeStatus;
 import com.aerodag.core.messaging.event.NodeCompletedEvent;
 import com.aerodag.core.messaging.event.NodeFailedEvent;
 import com.aerodag.core.repository.NodeRepository;
+import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
@@ -26,13 +28,15 @@ public class RedisNodeWorkerListener {
   private static final String EXECUTOR_SYSTEM_PROMPT =
       "You are an isolated task executor. Execute the following instruction. Return ONLY the direct result payload.";
 
+  private volatile boolean running = true;
+
   private final RedisTemplate<String, String> redisTemplate;
   private final NodeRepository nodeRepository;
   private final ChatClient chatClient;
   private final ApplicationEventPublisher eventPublisher;
 
   public RedisNodeWorkerListener(
-      RedisTemplate<String, String> redisTemplate,
+      @Qualifier("blockingRedisTemplate") RedisTemplate<String, String> redisTemplate,
       NodeRepository nodeRepository,
       ChatClient.Builder chatClientBuilder,
       ApplicationEventPublisher eventPublisher) {
@@ -42,21 +46,31 @@ public class RedisNodeWorkerListener {
     this.eventPublisher = eventPublisher;
   }
 
+  @PreDestroy
+  public void stop() {
+    running = false;
+    log.info("Node worker shutting down");
+  }
+
   @Async
   @EventListener(ApplicationReadyEvent.class)
   public void startListening() {
     log.info("Node worker started, polling queue: {}", QUEUE_NAME);
-    while (!Thread.currentThread().isInterrupted()) {
+    while (running && !Thread.currentThread().isInterrupted()) {
       try {
         String nodeIdStr = redisTemplate.opsForList().rightPop(QUEUE_NAME, Duration.ofSeconds(5));
         if (nodeIdStr == null) {
           continue;
         }
         processNode(UUID.fromString(nodeIdStr));
+      } catch (IllegalStateException e) {
+        log.info("Node worker stopping: Redis connection factory shut down");
+        break;
       } catch (Exception e) {
         log.error("Worker error while polling queue", e);
       }
     }
+    log.info("Node worker stopped");
   }
 
   private void processNode(UUID nodeId) {

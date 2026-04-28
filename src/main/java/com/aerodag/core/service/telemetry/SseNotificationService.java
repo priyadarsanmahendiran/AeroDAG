@@ -1,7 +1,10 @@
 package com.aerodag.core.service.telemetry;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,6 +21,11 @@ public class SseNotificationService {
 
   private final ConcurrentHashMap<UUID, CopyOnWriteArrayList<SseEmitter>> emitters =
       new ConcurrentHashMap<>();
+  private final ObjectMapper objectMapper;
+
+  public SseNotificationService(ObjectMapper objectMapper) {
+    this.objectMapper = objectMapper;
+  }
 
   public SseEmitter subscribe(UUID planId) {
     SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
@@ -37,12 +45,18 @@ public class SseNotificationService {
       return;
     }
 
-    String json =
-        String.format(
-            "{\"nodeId\":\"%s\",\"status\":\"%s\",\"resultPayload\":%s}",
-            nodeId,
-            status,
-            resultPayload != null ? "\"" + resultPayload.replace("\"", "\\\"") + "\"" : "null");
+    String json;
+    try {
+      json =
+          objectMapper.writeValueAsString(
+              Map.of(
+                  "nodeId", nodeId,
+                  "status", status,
+                  "resultPayload", resultPayload != null ? resultPayload : ""));
+    } catch (JsonProcessingException e) {
+      log.error("Failed to serialize node-update event for plan {}", planId, e);
+      return;
+    }
 
     for (SseEmitter emitter : planEmitters) {
       try {
